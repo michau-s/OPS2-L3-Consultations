@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -70,4 +71,45 @@ void print_array(int* array, int n)
     printf("\n");
 }
 
-int main(int argc, char** argv) { usage(argv[0]); }
+int main(int argc, char** argv)
+{
+    if (argc != 3)
+        usage(argv[0]);
+    int productsCount, workersCount;
+
+    productsCount = atoi(argv[1]);
+    workersCount = atoi(argv[2]);
+
+    if (productsCount < MIN_SHELVES || productsCount > MAX_SHELVES)
+        usage(argv[0]);
+
+    if (workersCount < MIN_WORKERS || workersCount > MAX_WORKERS)
+        usage(argv[0]);
+
+    int shopFd;
+    if (-1 == (shopFd = open(SHOP_FILENAME, O_CREAT | O_RDWR | O_TRUNC, 0666)))
+        ERR("open");
+
+    if (-1 == ftruncate(shopFd, productsCount * sizeof(int)))
+        ERR("ftruncate");
+
+    int* shopArr;
+    shopArr = mmap(NULL, productsCount * sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED, shopFd, 0);
+    close(shopFd);  // We can close the file as soon as we map
+
+    if (shopArr == MAP_FAILED)
+        ERR("mmap");
+
+    for (int i = 0; i < productsCount; i++)
+    {
+        shopArr[i] = i + 1;
+    }
+
+    shuffle(shopArr, productsCount);
+    print_array(shopArr, productsCount);
+
+    // We need to sync to ensure that the contents actually get written back
+    msync(shopArr, productsCount * sizeof(int), MS_SYNC);
+    munmap(shopArr, productsCount * sizeof(int));
+    exit(EXIT_SUCCESS);
+}

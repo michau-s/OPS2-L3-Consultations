@@ -1,6 +1,8 @@
 # Created by https://www.toptal.com/developers/gitignore/api/c,visualstudiocode,clion+all
 # Edit at https://www.toptal.com/developers/gitignore?templates=c,visualstudiocode,clion+all
 
+shop
+
 ### C ###
 # Prerequisites
 *.d
