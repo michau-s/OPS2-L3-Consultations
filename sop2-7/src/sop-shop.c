@@ -33,6 +33,11 @@
         y = __x;           \
     } while (0)
 
+typedef struct sharedData
+{
+    pthread_mutex_t mutexArr[MAX_SHELVES];
+} sharedData_t;
+
 void usage(char* program_name)
 {
     fprintf(stderr, "Usage: \n");
@@ -71,7 +76,7 @@ void print_array(int* array, int n)
     printf("\n");
 }
 
-void child_work(int* shopArr, int shopSize)
+void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
 {
     int i;
     int j = -1;
@@ -86,15 +91,21 @@ void child_work(int* shopArr, int shopSize)
         if (j < i)
             SWAP(i, j);
 
+        pthread_mutex_lock(&sharedData->mutexArr[i]);
+        pthread_mutex_lock(&sharedData->mutexArr[j]);
+
         if (shopArr[i] > shopArr[j])
         {
             SWAP(shopArr[i], shopArr[j]);
             msleep(100);
         }
+
+        pthread_mutex_unlock(&sharedData->mutexArr[i]);
+        pthread_mutex_unlock(&sharedData->mutexArr[j]);
     }
 }
 
-void createChildren(int workerCount, int* shopArr, int shopSize)
+void createChildren(int workerCount, int* shopArr, int shopSize, sharedData_t* sharedData)
 {
     int ret;
     for (int i = 0; i < workerCount; i++)
@@ -105,7 +116,7 @@ void createChildren(int workerCount, int* shopArr, int shopSize)
         if (ret == 0)  // Child
         {
             printf("[%d] Worker reports for a night shift\n", getpid());
-            child_work(shopArr, shopSize);
+            child_work(shopArr, shopSize, sharedData);
             exit(EXIT_SUCCESS);
         }
         // Parent
@@ -146,17 +157,42 @@ int main(int argc, char** argv)
         shopArr[i] = i + 1;
     }
 
+    sharedData_t* sharedData =
+        mmap(NULL, sizeof(sharedData_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+
+    for (int i = 0; i < MAX_SHELVES; i++)
+    {
+        pthread_mutex_init(&sharedData->mutexArr[i], &attr);
+    }
+
+    pthread_mutexattr_destroy(&attr);
+
+    if (sharedData == MAP_FAILED)
+        ERR("mmap");
+
     shuffle(shopArr, productsCount);
     print_array(shopArr, productsCount);
-    createChildren(workersCount, shopArr, productsCount);
+    createChildren(workersCount, shopArr, productsCount, sharedData);
 
     while (wait(NULL) > 0)
         ;
 
     print_array(shopArr, productsCount);
+    printf("Night shift in Bitronka is over\n");
+
+    // Cleanup
+    for (int i = 0; i < MAX_SHELVES; i++)
+    {
+        pthread_mutex_destroy(&sharedData->mutexArr[i]);
+    }
 
     // We need to sync to ensure that the contents actually get written back
     msync(shopArr, productsCount * sizeof(int), MS_SYNC);
+    munmap(sharedData, sizeof(sharedData_t));
     munmap(shopArr, productsCount * sizeof(int));
     exit(EXIT_SUCCESS);
 }
