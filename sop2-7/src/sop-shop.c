@@ -42,7 +42,7 @@ void usage(char* program_name)
     exit(EXIT_FAILURE);
 }
 
-void ms_sleep(unsigned int milli)
+void msleep(unsigned int milli)
 {
     time_t sec = (int)(milli / 1000);
     milli = milli - (sec * 1000);
@@ -69,6 +69,47 @@ void print_array(int* array, int n)
         printf("%3d ", array[i]);
     }
     printf("\n");
+}
+
+void child_work(int* shopArr, int shopSize)
+{
+    int i;
+    int j = -1;
+    srand(getpid());
+
+    for (int k = 0; k < 10; k++)
+    {
+        i = rand() % shopSize;
+        while ((j = rand() % shopSize) == i)  // j index cannot be the same as i index
+            ;
+
+        if (j < i)
+            SWAP(i, j);
+
+        if (shopArr[i] > shopArr[j])
+        {
+            SWAP(shopArr[i], shopArr[j]);
+            msleep(100);
+        }
+    }
+}
+
+void createChildren(int workerCount, int* shopArr, int shopSize)
+{
+    int ret;
+    for (int i = 0; i < workerCount; i++)
+    {
+        if (-1 == (ret = fork()))
+            ERR("fork");
+
+        if (ret == 0)  // Child
+        {
+            printf("[%d] Worker reports for a night shift\n", getpid());
+            child_work(shopArr, shopSize);
+            exit(EXIT_SUCCESS);
+        }
+        // Parent
+    }
 }
 
 int main(int argc, char** argv)
@@ -106,6 +147,12 @@ int main(int argc, char** argv)
     }
 
     shuffle(shopArr, productsCount);
+    print_array(shopArr, productsCount);
+    createChildren(workersCount, shopArr, productsCount);
+
+    while (wait(NULL) > 0)
+        ;
+
     print_array(shopArr, productsCount);
 
     // We need to sync to ensure that the contents actually get written back

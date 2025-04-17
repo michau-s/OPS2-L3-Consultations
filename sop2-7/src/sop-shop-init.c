@@ -41,7 +41,7 @@ void usage(char* program_name)
     exit(EXIT_FAILURE);
 }
 
-void ms_sleep(unsigned int milli)
+void msleep(unsigned int milli)
 {
     time_t sec = (int)(milli / 1000);
     milli = milli - (sec * 1000);
