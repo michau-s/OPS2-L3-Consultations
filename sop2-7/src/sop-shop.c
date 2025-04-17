@@ -38,6 +38,8 @@ typedef struct sharedData
     pthread_mutex_t mutexArr[MAX_SHELVES];
     int sorted;
     pthread_mutex_t mxSorted;
+    int deadWorkerCount;
+    pthread_mutex_t mxDeadWorkersCount;
 } sharedData_t;
 
 void usage(char* program_name)
@@ -78,6 +80,21 @@ void print_array(int* array, int n)
     printf("\n");
 }
 
+void mutex_lock_robust(sharedData_t* sharedData, int aisle)
+{
+    int ret;
+    // mx Lock doesn't set errno, it returns the error code instead
+    ret = pthread_mutex_lock(&sharedData->mutexArr[aisle]);
+    if (ret == EOWNERDEAD)
+    {
+        printf("[%d] Found a dead body in aisle %d\n", getpid(), aisle);
+        pthread_mutex_lock(&sharedData->mxDeadWorkersCount);
+        sharedData->deadWorkerCount++;
+        pthread_mutex_unlock(&sharedData->mxDeadWorkersCount);
+        pthread_mutex_consistent(&sharedData->mutexArr[aisle]);
+    }
+}
+
 void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
 {
     int i;
@@ -102,11 +119,15 @@ void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
         if (j < i)
             SWAP(i, j);
 
-        pthread_mutex_lock(&sharedData->mutexArr[i]);
-        pthread_mutex_lock(&sharedData->mutexArr[j]);
-
+        mutex_lock_robust(sharedData, i);
+        mutex_lock_robust(sharedData, j);
         if (shopArr[i] > shopArr[j])
         {
+            if (rand() % 100 == 0)
+            {
+                printf("[%d] Trips over pallet and dies\n", getpid());
+                abort();
+            }
             SWAP(shopArr[i], shopArr[j]);
             msleep(100);
         }
@@ -116,7 +137,7 @@ void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
     }
 }
 
-void manager_work(int* shopArr, int shopSize, sharedData_t* sharedData)
+void manager_work(int* shopArr, int shopSize, sharedData_t* sharedData, int workersCount)
 {
     int sorted = 0;
     while (!sorted)
@@ -125,7 +146,7 @@ void manager_work(int* shopArr, int shopSize, sharedData_t* sharedData)
 
         for (int i = 0; i < shopSize; i++)
         {
-            pthread_mutex_lock(&sharedData->mutexArr[i]);
+            mutex_lock_robust(sharedData, i);
         }
 
         print_array(shopArr, shopSize);
@@ -144,6 +165,18 @@ void manager_work(int* shopArr, int shopSize, sharedData_t* sharedData)
         {
             pthread_mutex_unlock(&sharedData->mutexArr[i]);
         }
+
+        pthread_mutex_lock(&sharedData->mxDeadWorkersCount);
+        // The body is discovered twice, because each worker has two mutexes locked
+        printf("[%d] Workers dead: %d\n", getpid(), sharedData->deadWorkerCount / 2);
+        if (workersCount == sharedData->deadWorkerCount / 2)  // All workers have died
+        {
+            printf("[%d] All workers died, I hate my job\n", getpid());
+            pthread_mutex_unlock(&sharedData->mxDeadWorkersCount);
+            exit(EXIT_SUCCESS);
+        }
+        pthread_mutex_unlock(&sharedData->mxDeadWorkersCount);
+
         msleep(500);
     }
 
@@ -180,7 +213,7 @@ void createChildren(int workerCount, int* shopArr, int shopSize, sharedData_t* s
     if (ret == 0)  // Manager
     {
         printf("[%d] Manager reports for a night shift\n", getpid());
-        manager_work(shopArr, shopSize, sharedData);
+        manager_work(shopArr, shopSize, sharedData, workerCount);
 
         // Cleanup
         munmap(shopArr, shopSize * sizeof(int));
@@ -225,12 +258,16 @@ int main(int argc, char** argv)
 
     sharedData_t* sharedData =
         mmap(NULL, sizeof(sharedData_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    sharedData->deadWorkerCount = 0;
+    sharedData->sorted = 0;
 
     pthread_mutexattr_t attr;
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
+    pthread_mutexattr_setrobust(&attr, PTHREAD_MUTEX_ROBUST);
 
     pthread_mutex_init(&sharedData->mxSorted, &attr);
+    pthread_mutex_init(&sharedData->mxDeadWorkersCount, &attr);
 
     for (int i = 0; i < MAX_SHELVES; i++)
     {
@@ -259,6 +296,7 @@ int main(int argc, char** argv)
         pthread_mutex_destroy(&sharedData->mutexArr[i]);
     }
     pthread_mutex_destroy(&sharedData->mxSorted);
+    pthread_mutex_destroy(&sharedData->mxDeadWorkersCount);
 
     // We need to sync to ensure that the contents actually get written back
     msync(shopArr, productsCount * sizeof(int), MS_SYNC);
