@@ -36,6 +36,8 @@
 typedef struct sharedData
 {
     pthread_mutex_t mutexArr[MAX_SHELVES];
+    int sorted;
+    pthread_mutex_t mxSorted;
 } sharedData_t;
 
 void usage(char* program_name)
@@ -82,8 +84,17 @@ void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
     int j = -1;
     srand(getpid());
 
-    for (int k = 0; k < 10; k++)
+    while (1)
     {
+        // Check if the array is sorted
+        pthread_mutex_lock(&sharedData->mxSorted);
+        if (sharedData->sorted)
+        {
+            pthread_mutex_unlock(&sharedData->mxSorted);
+            break;
+        }
+        pthread_mutex_unlock(&sharedData->mxSorted);
+
         i = rand() % shopSize;
         while ((j = rand() % shopSize) == i)  // j index cannot be the same as i index
             ;
@@ -105,6 +116,44 @@ void child_work(int* shopArr, int shopSize, sharedData_t* sharedData)
     }
 }
 
+void manager_work(int* shopArr, int shopSize, sharedData_t* sharedData)
+{
+    int sorted = 0;
+    while (!sorted)
+    {
+        msync(shopArr, shopSize * sizeof(int), MS_SYNC);
+
+        for (int i = 0; i < shopSize; i++)
+        {
+            pthread_mutex_lock(&sharedData->mutexArr[i]);
+        }
+
+        print_array(shopArr, shopSize);
+
+        sorted = 1;
+        for (int i = 0; i < shopSize; i++)
+        {
+            if (shopArr[i] != i + 1)
+            {
+                sorted = 0;
+                break;
+            }
+        }
+
+        for (int i = 0; i < shopSize; i++)
+        {
+            pthread_mutex_unlock(&sharedData->mutexArr[i]);
+        }
+        msleep(500);
+    }
+
+    printf("[%d] The shop shelves are sorted\n", getpid());
+    pthread_mutex_lock(&sharedData->mxSorted);
+    sharedData->sorted = 1;
+    pthread_mutex_unlock(&sharedData->mxSorted);
+    exit(EXIT_SUCCESS);
+}
+
 void createChildren(int workerCount, int* shopArr, int shopSize, sharedData_t* sharedData)
 {
     int ret;
@@ -117,9 +166,26 @@ void createChildren(int workerCount, int* shopArr, int shopSize, sharedData_t* s
         {
             printf("[%d] Worker reports for a night shift\n", getpid());
             child_work(shopArr, shopSize, sharedData);
+
+            // Cleanup
+            munmap(shopArr, shopSize * sizeof(int));
+            munmap(sharedData, sizeof(sharedData_t));
             exit(EXIT_SUCCESS);
         }
         // Parent
+    }
+
+    if (-1 == (ret = fork()))
+        ERR("fork");
+    if (ret == 0)  // Manager
+    {
+        printf("[%d] Manager reports for a night shift\n", getpid());
+        manager_work(shopArr, shopSize, sharedData);
+
+        // Cleanup
+        munmap(shopArr, shopSize * sizeof(int));
+        munmap(sharedData, sizeof(sharedData_t));
+        exit(EXIT_SUCCESS);
     }
 }
 
@@ -164,11 +230,14 @@ int main(int argc, char** argv)
     pthread_mutexattr_init(&attr);
     pthread_mutexattr_setpshared(&attr, PTHREAD_PROCESS_SHARED);
 
+    pthread_mutex_init(&sharedData->mxSorted, &attr);
+
     for (int i = 0; i < MAX_SHELVES; i++)
     {
         pthread_mutex_init(&sharedData->mutexArr[i], &attr);
     }
 
+    // We may destroy the attribute structure right away
     pthread_mutexattr_destroy(&attr);
 
     if (sharedData == MAP_FAILED)
@@ -189,6 +258,7 @@ int main(int argc, char** argv)
     {
         pthread_mutex_destroy(&sharedData->mutexArr[i]);
     }
+    pthread_mutex_destroy(&sharedData->mxSorted);
 
     // We need to sync to ensure that the contents actually get written back
     msync(shopArr, productsCount * sizeof(int), MS_SYNC);
